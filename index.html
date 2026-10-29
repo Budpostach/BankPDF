@@ -60,7 +60,8 @@
                 errorPass: "Помилка: файл захищено паролем.",
                 errorCorrupt: "Помилка: файл пошкоджено або неможливо прочитати.",
                 successPass: "Успішно конвертовано",
-                splitNotice: "Багатосторінковий файл: розбито на частини (<490 КБ)",
+                splitNotice: "Багатосторінковий: розбито на частини (<490 КБ)",
+                heavyPageNotice: "⚠️ Застосовано глибоке стиснення важких сторінок",
                 noFiles: "Немає завантажених файлів",
                 compareTitle: "Порівняння сторінок",
                 close: "Закрити",
@@ -100,6 +101,7 @@
                 errorCorrupt: "Error: File is corrupted or unreadable.",
                 successPass: "Successfully Converted",
                 splitNotice: "Multi-page: Split into parts (<490 KB)",
+                heavyPageNotice: "⚠️ Deep compression applied to heavy pages",
                 noFiles: "No files uploaded",
                 compareTitle: "Page Comparison",
                 close: "Close",
@@ -239,6 +241,7 @@
                                                     </span>
                                                     ${item.processedSize ? `<span>Final Size: <b class="${item.processedSize <= MAX_BYTES ? 'text-emerald-600 font-bold' : 'text-rose-600'}">${(item.processedSize / 1024).toFixed(1)} KB</b></span>` : ''}
                                                     ${item.isSplit ? `<span class="bg-amber-100 text-amber-800 px-2 py-0.5 rounded font-medium">${strings.splitNotice}</span>` : ''}
+                                                    ${item.hasHeavyPages ? `<span class="bg-orange-100 text-orange-800 px-2 py-0.5 rounded font-medium">${strings.heavyPageNotice}</span>` : ''}
                                                 </div>
                                             </div>
                                             
@@ -317,7 +320,7 @@
         }
         function addFilesToQueue(newFiles) {
             for (const file of newFiles) {
-                filesQueue.push({ file, pagesCount: null, status: 'pending', statusText: 'В черзі', processedPdfBytes: null, processedSize: null, isSplit: false });
+                filesQueue.push({ file, pagesCount: null, status: 'pending', statusText: 'В черзі', processedPdfBytes: null, processedSize: null, isSplit: false, hasHeavyPages: false });
             }
             renderApp();
         }
@@ -410,6 +413,7 @@
                     // If even compressed whole document exceeds 490KB, split into individual single-page PDFs inside a ZIP
                     if (!bestPdfBlob) {
                         item.isSplit = true;
+                        let heavyDetected = false;
                         const zip = new JSZip();
                         let totalSizeSum = 0;
 
@@ -422,10 +426,18 @@
                                 format: [pi.width, pi.height]
                             });
                             
-                            // Find best quality for single page
+                            // Find strict best quality for single page under MAX_BYTES
                             let pageBytes = null;
-                            let pLow = 0.1, pHigh = 0.9;
-                            for (let pIter = 0; pIter < 5; pIter++) {
+                            let pLow = 0.05, pHigh = 0.9;
+                            
+                            // Check if initial high quality exceeds limit -> triggers heavy page notice
+                            const testDoc = new jsPDF({ orientation: pi.width > pi.height ? 'l' : 'p', unit: 'pt', format: [pi.width, pi.height] });
+                            testDoc.addImage(pi.canvas.toDataURL('image/jpeg', 0.5), 'JPEG', 0, 0, pi.width, pi.height);
+                            if (testDoc.output('arraybuffer').byteLength > MAX_BYTES) {
+                                heavyDetected = true;
+                            }
+
+                            for (let pIter = 0; pIter < 6; pIter++) {
                                 let pMid = (pLow + pHigh) / 2;
                                 singleDoc.deletePage(1);
                                 singleDoc.addPage([pi.width, pi.height], pi.width > pi.height ? 'l' : 'p');
@@ -438,10 +450,12 @@
                                     pHigh = pMid;
                                 }
                             }
+
+                            // Fallback to deep low quality if heavy page is extremely dense
                             if (!pageBytes) {
                                 singleDoc.deletePage(1);
                                 singleDoc.addPage([pi.width, pi.height], pi.width > pi.height ? 'l' : 'p');
-                                singleDoc.addImage(pi.canvas.toDataURL('image/jpeg', 0.15), 'JPEG', 0, 0, pi.width, pi.height);
+                                singleDoc.addImage(pi.canvas.toDataURL('image/jpeg', 0.08), 'JPEG', 0, 0, pi.width, pi.height);
                                 pageBytes = singleDoc.output('arraybuffer');
                             }
 
@@ -449,13 +463,15 @@
                             totalSizeSum += pageBytes.byteLength;
                         }
 
+                        item.hasHeavyPages = heavyDetected;
                         const zipBlob = await zip.generateAsync({ type: 'arraybuffer' });
                         item.processedPdfBytes = zipBlob;
-                        item.processedSize = totalSizeSum; // approx or average
+                        item.processedSize = totalSizeSum / pageImages.length; // average size per page display
                         item.status = 'success';
                         item.statusText = strings.successPass;
                     } else {
                         item.isSplit = false;
+                        item.hasHeavyPages = false;
                         item.processedPdfBytes = bestPdfBlob;
                         item.processedSize = bestSize;
                         item.status = 'success';
@@ -500,7 +516,7 @@
             URL.revokeObjectURL(url);
         }
 
-        function openPreview(index) {
+        openPreview = function(index) {
             const item = filesQueue[index];
             if (!item) return;
             activeModal = { fileName: item.file.name, originalDataUrl: item.originalDataUrl, processedDataUrl: item.processedDataUrl };

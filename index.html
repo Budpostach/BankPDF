@@ -23,7 +23,7 @@
     <div id="root" class="flex-grow flex flex-col"></div>
 
     <footer class="bg-white border-t border-slate-200 py-4 px-6 text-center text-xs text-slate-500">
-        BankPDF Converter AI &bull; Secure Client-Side Bank Document Processor &bull; Max 490 KB Limit Guaranteed
+        BankPDF Converter AI &bull; Secure Client-Side Bank Document Processor &bull; Strict Max 490 KB Limit
     </footer>
 
     <!-- Main Application Logic Script -->
@@ -41,7 +41,7 @@
                 qualityLabel: "Якість JPEG",
                 pageSizeLabel: "Збереження розміру",
                 priorityLabel: "Пріоритет",
-                auto: "Авто (Максимальна якість)",
+                auto: "Авто (Ціль < 490 КБ)",
                 enabled: "Увімкнено",
                 maxReadability: "Максимальна читавсть",
                 convertBtn: "Конвертувати PDF",
@@ -60,14 +60,14 @@
                 errorPass: "Помилка: файл захищено паролем.",
                 errorCorrupt: "Помилка: файл пошкоджено або неможливо прочитати.",
                 successPass: "Успішно конвертовано",
-                limitPass: "В нормі (до 490 КБ)",
+                limitPass: "В нормі (< 490 КБ)",
                 limitFail: "Перевищено ліміт 490 КБ",
                 noFiles: "Немає завантажених файлів",
                 compareTitle: "Порівняння сторінок",
                 close: "Закрити",
                 zoom: "Збільшити",
                 originalPage: "Оригінальна сторінка",
-                processedPage: "Оброблена (600 DPI, Grayscale)"
+                processedPage: "Оброблена (300 DPI, Grayscale)"
             },
             en: {
                 title: "BankPDF Converter AI",
@@ -81,7 +81,7 @@
                 qualityLabel: "JPEG Quality",
                 pageSizeLabel: "Preserve Page Size",
                 priorityLabel: "Priority",
-                auto: "Auto (Maximum Possible)",
+                auto: "Auto (Target < 490 KB)",
                 enabled: "Enabled",
                 maxReadability: "Maximum Readability",
                 convertBtn: "Convert PDF",
@@ -100,14 +100,14 @@
                 errorPass: "Error: File is password protected.",
                 errorCorrupt: "Error: File is corrupted or unreadable.",
                 successPass: "Successfully Converted",
-                limitPass: "PASS (Under 490 KB)",
+                limitPass: "PASS (< 490 KB)",
                 limitFail: "Exceeds 490 KB Limit",
                 noFiles: "No files uploaded",
                 compareTitle: "Page Comparison",
                 close: "Close",
                 zoom: "Zoom",
                 originalPage: "Original Page",
-                processedPage: "Processed (600 DPI, Grayscale)"
+                processedPage: "Processed (300 DPI, Grayscale)"
             }
         };
 
@@ -115,7 +115,9 @@
         let filesQueue = [];
         let isProcessing = false;
         let activeModal = null;
-        const MAX_BYTES = 490 * 1024;
+        
+        // Target strict max size: 480 KB (safe margin below 490 KB)
+        const MAX_BYTES = 480 * 1024; 
 
         function renderApp() {
             const strings = t[currentLang];
@@ -165,7 +167,7 @@
                             <ul class="space-y-3 text-xs">
                                 <li class="flex justify-between py-1.5 border-b border-slate-100">
                                     <span class="text-slate-500">${strings.resLabel}</span>
-                                    <span class="font-semibold text-slate-700">600 DPI</span>
+                                    <span class="font-semibold text-slate-700">300 DPI</span>
                                 </li>
                                 <li class="flex justify-between py-1.5 border-b border-slate-100">
                                     <span class="text-slate-500">${strings.colorLabel}</span>
@@ -173,7 +175,7 @@
                                 </li>
                                 <li class="flex justify-between py-1.5 border-b border-slate-100">
                                     <span class="text-slate-500">${strings.sizeLimitLabel}</span>
-                                    <span class="font-semibold text-slate-700">490,000 bytes (490 KB)</span>
+                                    <span class="font-semibold text-emerald-600 font-bold">&lt; 490 KB Strict</span>
                                 </li>
                                 <li class="flex justify-between py-1.5 border-b border-slate-100">
                                     <span class="text-slate-500">${strings.qualityLabel}</span>
@@ -238,7 +240,7 @@
                                                             ${item.statusText || 'Очікування'}
                                                         </b>
                                                     </span>
-                                                    ${item.processedSize ? `<span>Final Size: <b>${(item.processedSize / 1024).toFixed(1)} KB</b></span>` : ''}
+                                                    ${item.processedSize ? `<span>Final Size: <b class="${item.processedSize <= 490*1024 ? 'text-emerald-600 font-bold' : 'text-rose-600'}">${(item.processedSize / 1024).toFixed(1)} KB</b></span>` : ''}
                                                     ${item.jpegQuality ? `<span>JPEG Quality: <b>${item.jpegQuality}%</b></span>` : ''}
                                                 </div>
                                             </div>
@@ -343,7 +345,8 @@
                     item.pagesCount = pdfDoc.numPages;
 
                     const pageImages = [];
-                    const scale = 600 / 72;
+                    // Змінено з 600 на 300 DPI
+                    const scale = 300 / 72;
                     for (let p = 1; p <= pdfDoc.numPages; p++) {
                         const page = await pdfDoc.getPage(p);
                         const viewport = page.getViewport({ scale: scale });
@@ -374,10 +377,10 @@
 
                     let bestQuality = 1.0;
                     let bestPdfBlob = null;
-                    let low = 0.2, high = 1.0;
+                    let low = 0.05, high = 1.0;
                     let bestSize = Infinity;
 
-                    for (let iter = 0; iter < 6; iter++) {
+                    for (let iter = 0; iter < 7; iter++) {
                         let mid = (low + high) / 2;
                         const { jsPDF } = window.jspdf;
                         const doc = new jsPDF({
@@ -413,11 +416,11 @@
                         for (let pIdx = 0; pIdx < pageImages.length; pIdx++) {
                             const pi = pageImages[pIdx];
                             if (pIdx > 0) doc.addPage([pi.width, pi.height], pi.width > pi.height ? 'l' : 'p');
-                            doc.addImage(pi.canvas.toDataURL('image/jpeg', 0.2), 'JPEG', 0, 0, pi.width, pi.height);
+                            doc.addImage(pi.canvas.toDataURL('image/jpeg', 0.1), 'JPEG', 0, 0, pi.width, pi.height);
                         }
                         bestPdfBlob = doc.output('arraybuffer');
                         bestSize = bestPdfBlob.byteLength;
-                        bestQuality = 0.2;
+                        bestQuality = 0.1;
                     }
 
                     item.processedPdfBytes = bestPdfBlob;
@@ -441,7 +444,7 @@
             const blob = new Blob([item.processedPdfBytes], { type: 'application/pdf' });
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
-            a.href = url; a.download = `Converted_490KB_${item.file.name}`;
+            a.href = url; a.download = `Converted_300DPI_Under490KB_${item.file.name}`;
             document.body.appendChild(a); a.click(); document.body.removeChild(a);
             URL.revokeObjectURL(url);
         }
@@ -449,12 +452,12 @@
         async function downloadAllZip() {
             const zip = new JSZip();
             for (const item of filesQueue) {
-                if (item.processedPdfBytes) zip.file(`Converted_490KB_${item.file.name}`, item.processedPdfBytes);
+                if (item.processedPdfBytes) zip.file(`Converted_300DPI_Under490KB_${item.file.name}`, item.processedPdfBytes);
             }
             const content = await zip.generateAsync({ type: 'blob' });
             const url = URL.createObjectURL(content);
             const a = document.createElement('a');
-            a.href = url; a.download = `BankPDF_490KB_Export.zip`;
+            a.href = url; a.download = `BankPDF_300DPI_Export.zip`;
             document.body.appendChild(a); a.click(); document.body.removeChild(a);
             URL.revokeObjectURL(url);
         }

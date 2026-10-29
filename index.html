@@ -60,14 +60,13 @@
                 errorPass: "Помилка: файл захищено паролем.",
                 errorCorrupt: "Помилка: файл пошкоджено або неможливо прочитати.",
                 successPass: "Успішно конвертовано",
-                limitPass: "В нормі (< 490 КБ)",
-                limitFail: "Перевищено ліміт 490 КБ",
+                splitNotice: "Багатосторінковий файл: розбито на частини (<490 КБ)",
                 noFiles: "Немає завантажених файлів",
                 compareTitle: "Порівняння сторінок",
                 close: "Закрити",
                 zoom: "Збільшити",
                 originalPage: "Оригінальна сторінка",
-                processedPage: "Оброблена (300 DPI, Grayscale)"
+                processedPage: "Оброблена (Smart DPI, Grayscale)"
             },
             en: {
                 title: "BankPDF Converter AI",
@@ -100,14 +99,13 @@
                 errorPass: "Error: File is password protected.",
                 errorCorrupt: "Error: File is corrupted or unreadable.",
                 successPass: "Successfully Converted",
-                limitPass: "PASS (< 490 KB)",
-                limitFail: "Exceeds 490 KB Limit",
+                splitNotice: "Multi-page: Split into parts (<490 KB)",
                 noFiles: "No files uploaded",
                 compareTitle: "Page Comparison",
                 close: "Close",
                 zoom: "Zoom",
                 originalPage: "Original Page",
-                processedPage: "Processed (300 DPI, Grayscale)"
+                processedPage: "Processed (Smart DPI, Grayscale)"
             }
         };
 
@@ -116,8 +114,7 @@
         let isProcessing = false;
         let activeModal = null;
         
-        // Target strict max size: 480 KB (safe margin below 490 KB)
-        const MAX_BYTES = 480 * 1024; 
+        const MAX_BYTES = 480 * 1024; // Safe margin below 490 KB
 
         function renderApp() {
             const strings = t[currentLang];
@@ -127,8 +124,8 @@
                 <header class="bg-blue-950 text-white shadow-md">
                     <div class="max-w-7xl mx-auto px-4 py-4 flex flex-col sm:flex-row justify-between items-center gap-4">
                         <div class="flex items-center space-x-3">
-                            <div class="bg-blue-600 p-2.5 rounded-xl shadow-inner flex items-center justify-center">
-                                <i data-lucide="cpu" class="w-7 h-7 text-white"></i>
+                            <div class="bg-white p-1 rounded-xl shadow-inner flex items-center justify-center w-11 h-11 overflow-hidden">
+                                <img src="./logo.png" alt="Logo" class="w-full h-full object-contain">
                             </div>
                             <div>
                                 <h1 class="text-xl font-bold tracking-tight">${strings.title}</h1>
@@ -167,7 +164,7 @@
                             <ul class="space-y-3 text-xs">
                                 <li class="flex justify-between py-1.5 border-b border-slate-100">
                                     <span class="text-slate-500">${strings.resLabel}</span>
-                                    <span class="font-semibold text-slate-700">300 DPI</span>
+                                    <span class="font-semibold text-slate-700">Smart DPI (300 / 150)</span>
                                 </li>
                                 <li class="flex justify-between py-1.5 border-b border-slate-100">
                                     <span class="text-slate-500">${strings.colorLabel}</span>
@@ -240,8 +237,8 @@
                                                             ${item.statusText || 'Очікування'}
                                                         </b>
                                                     </span>
-                                                    ${item.processedSize ? `<span>Final Size: <b class="${item.processedSize <= 490*1024 ? 'text-emerald-600 font-bold' : 'text-rose-600'}">${(item.processedSize / 1024).toFixed(1)} KB</b></span>` : ''}
-                                                    ${item.jpegQuality ? `<span>JPEG Quality: <b>${item.jpegQuality}%</b></span>` : ''}
+                                                    ${item.processedSize ? `<span>Final Size: <b class="${item.processedSize <= MAX_BYTES ? 'text-emerald-600 font-bold' : 'text-rose-600'}">${(item.processedSize / 1024).toFixed(1)} KB</b></span>` : ''}
+                                                    ${item.isSplit ? `<span class="bg-amber-100 text-amber-800 px-2 py-0.5 rounded font-medium">${strings.splitNotice}</span>` : ''}
                                                 </div>
                                             </div>
                                             
@@ -252,7 +249,7 @@
                                                     </button>
                                                     <button onclick="downloadFile(${index})" class="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-medium py-2 px-3 rounded-lg shadow transition flex items-center gap-1.5">
                                                         <i data-lucide="download" class="w-4 h-4"></i>
-                                                        ${strings.download}
+                                                        ${item.isSplit ? 'Завантажити (ZIP)' : strings.download}
                                                     </button>
                                                 ` : ''}
                                                 <button onclick="removeFile(${index})" class="p-2 text-slate-400 hover:text-rose-600 transition" title="Видалити">
@@ -320,7 +317,7 @@
         }
         function addFilesToQueue(newFiles) {
             for (const file of newFiles) {
-                filesQueue.push({ file, pagesCount: null, status: 'pending', statusText: 'В черзі', processedPdfBytes: null, processedSize: null, jpegQuality: null });
+                filesQueue.push({ file, pagesCount: null, status: 'pending', statusText: 'В черзі', processedPdfBytes: null, processedSize: null, isSplit: false });
             }
             renderApp();
         }
@@ -344,8 +341,11 @@
                     const pdfDoc = await loadingTask.promise;
                     item.pagesCount = pdfDoc.numPages;
 
+                    // SMART DPI: if pages > 3, use 150 DPI to save space, else 300 DPI
+                    const targetDpi = item.pagesCount > 3 ? 150 : 300;
+                    const scale = targetDpi / 72;
+
                     const pageImages = [];
-                    const scale = 300 / 72;
                     for (let p = 1; p <= pdfDoc.numPages; p++) {
                         const page = await pdfDoc.getPage(p);
                         const viewport = page.getViewport({ scale: scale });
@@ -357,6 +357,7 @@
 
                         if (p === 1) item.originalDataUrl = canvas.toDataURL('image/jpeg', 0.8);
 
+                        // Grayscale conversion
                         const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
                         const data = imgData.data;
                         for (let j = 0; j < data.length; j += 4) {
@@ -374,12 +375,13 @@
                         });
                     }
 
+                    // Try to compile whole document under MAX_BYTES using binary search quality
                     let bestQuality = 1.0;
                     let bestPdfBlob = null;
                     let low = 0.05, high = 1.0;
                     let bestSize = Infinity;
 
-                    for (let iter = 0; iter < 7; iter++) {
+                    for (let iter = 0; iter < 6; iter++) {
                         let mid = (low + high) / 2;
                         const { jsPDF } = window.jspdf;
                         const doc = new jsPDF({
@@ -405,28 +407,60 @@
                         }
                     }
 
+                    // If even compressed whole document exceeds 490KB, split into individual single-page PDFs inside a ZIP
                     if (!bestPdfBlob) {
-                        const { jsPDF } = window.jspdf;
-                        const doc = new jsPDF({
-                            orientation: pageImages[0].width > pageImages[0].height ? 'l' : 'p',
-                            unit: 'pt',
-                            format: [pageImages[0].width, pageImages[0].height]
-                        });
+                        item.isSplit = true;
+                        const zip = new JSZip();
+                        let totalSizeSum = 0;
+
                         for (let pIdx = 0; pIdx < pageImages.length; pIdx++) {
                             const pi = pageImages[pIdx];
-                            if (pIdx > 0) doc.addPage([pi.width, pi.height], pi.width > pi.height ? 'l' : 'p');
-                            doc.addImage(pi.canvas.toDataURL('image/jpeg', 0.1), 'JPEG', 0, 0, pi.width, pi.height);
-                        }
-                        bestPdfBlob = doc.output('arraybuffer');
-                        bestSize = bestPdfBlob.byteLength;
-                        bestQuality = 0.1;
-                    }
+                            const { jsPDF } = window.jspdf;
+                            const singleDoc = new jsPDF({
+                                orientation: pi.width > pi.height ? 'l' : 'p',
+                                unit: 'pt',
+                                format: [pi.width, pi.height]
+                            });
+                            
+                            // Find best quality for single page
+                            let pageBytes = null;
+                            let pLow = 0.1, pHigh = 0.9;
+                            for (let pIter = 0; pIter < 5; pIter++) {
+                                let pMid = (pLow + pHigh) / 2;
+                                singleDoc.deletePage(1);
+                                singleDoc.addPage([pi.width, pi.height], pi.width > pi.height ? 'l' : 'p');
+                                singleDoc.addImage(pi.canvas.toDataURL('image/jpeg', pMid), 'JPEG', 0, 0, pi.width, pi.height);
+                                const out = singleDoc.output('arraybuffer');
+                                if (out.byteLength <= MAX_BYTES) {
+                                    pageBytes = out;
+                                    pLow = pMid;
+                                } else {
+                                    pHigh = pMid;
+                                }
+                            }
+                            if (!pageBytes) {
+                                singleDoc.deletePage(1);
+                                singleDoc.addPage([pi.width, pi.height], pi.width > pi.height ? 'l' : 'p');
+                                singleDoc.addImage(pi.canvas.toDataURL('image/jpeg', 0.15), 'JPEG', 0, 0, pi.width, pi.height);
+                                pageBytes = singleDoc.output('arraybuffer');
+                            }
 
-                    item.processedPdfBytes = bestPdfBlob;
-                    item.processedSize = bestSize;
-                    item.jpegQuality = Math.round(bestQuality * 100);
-                    item.status = 'success';
-                    item.statusText = strings.successPass;
+                            zip.file(`Page_${pIdx + 1}_${item.file.name}`, pageBytes);
+                            totalSizeSum += pageBytes.byteLength;
+                        }
+
+                        const zipBlob = await zip.generateAsync({ type: 'arraybuffer' });
+                        item.processedPdfBytes = zipBlob;
+                        item.processedSize = totalSizeSum; // approx or average
+                        item.status = 'success';
+                        item.statusText = strings.successPass;
+                    } else {
+                        item.isSplit = false;
+                        item.processedPdfBytes = bestPdfBlob;
+                        item.processedSize = bestSize;
+                        item.status = 'success';
+                        item.statusText = strings.successPass;
+                    }
                 } catch (err) {
                     item.status = 'error';
                     item.statusText = strings.errorCorrupt;
@@ -440,10 +474,12 @@
         function downloadFile(index) {
             const item = filesQueue[index];
             if (!item || !item.processedPdfBytes) return;
-            const blob = new Blob([item.processedPdfBytes], { type: 'application/pdf' });
+            const ext = item.isSplit ? 'zip' : 'pdf';
+            const mime = item.isSplit ? 'application/zip' : 'application/pdf';
+            const blob = new Blob([item.processedPdfBytes], { type: mime });
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
-            a.href = url; a.download = `Converted_300DPI_Under490KB_${item.file.name}`;
+            a.href = url; a.download = `Converted_${item.isSplit ? 'Split_Parts' : 'Under490KB'}_${item.file.name}.${ext}`;
             document.body.appendChild(a); a.click(); document.body.removeChild(a);
             URL.revokeObjectURL(url);
         }
@@ -451,12 +487,15 @@
         async function downloadAllZip() {
             const zip = new JSZip();
             for (const item of filesQueue) {
-                if (item.processedPdfBytes) zip.file(`Converted_300DPI_Under490KB_${item.file.name}`, item.processedPdfBytes);
+                if (item.processedPdfBytes) {
+                    const ext = item.isSplit ? 'zip' : 'pdf';
+                    zip.file(`Processed_${item.file.name}.${ext}`, item.processedPdfBytes);
+                }
             }
             const content = await zip.generateAsync({ type: 'blob' });
             const url = URL.createObjectURL(content);
             const a = document.createElement('a');
-            a.href = url; a.download = `BankPDF_300DPI_Export.zip`;
+            a.href = url; a.download = `BankPDF_Batch_Export.zip`;
             document.body.appendChild(a); a.click(); document.body.removeChild(a);
             URL.revokeObjectURL(url);
         }

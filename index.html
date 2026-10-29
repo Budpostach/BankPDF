@@ -43,7 +43,7 @@
                 priorityLabel: "Пріоритет",
                 auto: "Авто (Ціль < 490 КБ)",
                 enabled: "Увімкнено",
-                maxReadability: "Максимальна читавсть",
+                maxReadability: "Максимальна читабельність",
                 convertBtn: "Конвертувати PDF",
                 processing: "Обробка...",
                 clearList: "Очистити список",
@@ -345,7 +345,6 @@
                     item.pagesCount = pdfDoc.numPages;
 
                     const pageImages = [];
-                    // Змінено з 600 на 300 DPI
                     const scale = 300 / 72;
                     for (let p = 1; p <= pdfDoc.numPages; p++) {
                         const page = await pdfDoc.getPage(p);

@@ -28,6 +28,8 @@
 
     <!-- Main Application Logic Script -->
     <script>
+        const LOGO_SRC = "BP_logo.jpg"; // Можно заменить на относительный путь или оставьте встроенным
+
         const t = {
             ua: {
                 title: "PDF Converter",
@@ -116,7 +118,7 @@
         let isProcessing = false;
         let activeModal = null;
         
-        // Жесткий лимит 490 KB (490 * 1024 байт)
+        // Жесткое ограничение 490 KB
         const MAX_BYTES = 490 * 1024;
 
         function renderApp() {
@@ -127,8 +129,8 @@
                 <header class="bg-blue-950 text-white shadow-md">
                     <div class="max-w-7xl mx-auto px-4 py-4 flex flex-col sm:flex-row justify-between items-center gap-4">
                         <div class="flex items-center space-x-3">
-                            <div class="w-10 h-10 rounded-xl overflow-hidden shadow-inner flex items-center justify-center bg-white">
-                                <img src="BP_logo.jpg" alt="Budpostach Logo" class="w-full h-full object-cover">
+                            <div class="w-10 h-10 rounded-xl overflow-hidden shadow-inner flex items-center justify-center bg-white p-0.5">
+                                <img src="${LOGO_SRC}" alt="Budpostach Logo" class="w-full h-full object-contain" onerror="this.onerror=null; this.parentElement.innerHTML='<i data-lucide=box class=\\'w-6 h-6 text-blue-600\\'></i>'; lucide.createIcons();">
                             </div>
                             <div>
                                 <h1 class="text-xl font-bold tracking-tight">${strings.title}</h1>
@@ -328,7 +330,6 @@
         function removeFile(index) { filesQueue.splice(index, 1); renderApp(); }
         function clearQueue() { filesQueue = []; renderApp(); }
 
-        // Генерация полноценного PDF из всех страниц
         function createPdfBuffer(pageImages, quality) {
             const { jsPDF } = window.jspdf;
             const doc = new jsPDF({
@@ -345,11 +346,9 @@
             return doc.output('arraybuffer');
         }
 
-        // Генерация одной страницы с жестким контролем размера под 490 КБ
-        function createStrictSinglePagePdf(pi, initialQuality, scaleFactor) {
+        function createStrictSinglePagePdf(pi, targetQuality, scaleFactor) {
             const { jsPDF } = window.jspdf;
             
-            // Масштабируем холст если передан коэффициент меньше 1.0
             let canvasToUse = pi.canvas;
             if (scaleFactor < 1.0) {
                 const scaledCanvas = document.createElement('canvas');
@@ -361,10 +360,9 @@
             }
 
             let bestOut = null;
-            let low = 0.01, high = initialQuality;
+            let low = 0.005, high = targetQuality;
 
-            // Бинарный поиск качественного сжатия для одной страницы
-            for (let iter = 0; iter < 5; iter++) {
+            for (let iter = 0; iter < 7; iter++) {
                 let mid = (low + high) / 2;
                 const singleDoc = new jsPDF({
                     orientation: pi.width > pi.height ? 'l' : 'p',
@@ -382,14 +380,13 @@
                 }
             }
 
-            // Если даже на минимуме не влезло — возвращаем последнее сгенерированное или форсируем ультра-низкое качество
             if (!bestOut) {
                 const singleDoc = new jsPDF({
                     orientation: pi.width > pi.height ? 'l' : 'p',
                     unit: 'pt',
                     format: [pi.width, pi.height]
                 });
-                singleDoc.addImage(canvasToUse.toDataURL('image/jpeg', 0.01), 'JPEG', 0, 0, pi.width, pi.height);
+                singleDoc.addImage(canvasToUse.toDataURL('image/jpeg', 0.005), 'JPEG', 0, 0, pi.width, pi.height);
                 bestOut = singleDoc.output('arraybuffer');
             }
 
@@ -449,7 +446,6 @@
                     let bestSize = Infinity;
                     let low = 0.01, high = 0.9;
 
-                    // Попытка сжать весь документ в единый файл до 490 КБ
                     for (let iter = 0; iter < 7; iter++) {
                         let mid = (low + high) / 2;
                         const pdfOutput = createPdfBuffer(pageImages, mid);
@@ -468,7 +464,6 @@
                     }
 
                     if (!bestPdfBlob) {
-                        // Если единый файл превышает 490 КБ, разделяем страницы и сжимаем каждую строго под лимит
                         item.isSplit = true;
                         let heavyDetected = false;
                         const zip = new JSZip();
@@ -478,17 +473,15 @@
                             const pi = pageImages[pIdx];
                             let pageBytes = createStrictSinglePagePdf(pi, 0.8, 1.0);
 
-                            // Многоуровневая проверка: если страница всё еще больше 490 КБ, уменьшаем масштаб
-                            let currentScale = 0.9;
-                            while (pageBytes.byteLength > MAX_BYTES && currentScale >= 0.2) {
+                            let currentScale = 0.95;
+                            while (pageBytes.byteLength > MAX_BYTES && currentScale >= 0.15) {
                                 heavyDetected = true;
-                                pageBytes = createStrictSinglePagePdf(pi, 0.4, currentScale);
-                                currentScale -= 0.2;
+                                pageBytes = createStrictSinglePagePdf(pi, 0.3, currentScale);
+                                currentScale -= 0.15;
                             }
 
-                            // Последняя страховка: если всё еще не влезло, жестко давим качество до минимума
                             if (pageBytes.byteLength > MAX_BYTES) {
-                                pageBytes = createStrictSinglePagePdf(pi, 0.05, 0.15);
+                                pageBytes = createStrictSinglePagePdf(pi, 0.005, 0.10);
                             }
 
                             zip.file(`Page_${pIdx + 1}_${item.file.name}`, pageBytes);

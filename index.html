@@ -116,7 +116,8 @@
         let isProcessing = false;
         let activeModal = null;
         
-        const MAX_BYTES = 480 * 1024;
+        // Строгий лимит 490 KB (490 * 1024 байт)
+        const MAX_BYTES = 490 * 1024;
 
         function renderApp() {
             const strings = t[currentLang];
@@ -280,7 +281,7 @@
                     <div class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
                         <div class="bg-white rounded-2xl shadow-2xl max-w-4xl w-full max-h-[90vh] flex flex-col overflow-hidden animate-in fade-in zoom-in duration-200">
                             <div class="px-6 py-4 border-b border-slate-200 flex justify-between items-center bg-slate-50">
-                                <h3 class="font-bold text-slate-800 text-sm">${strings.compareTitle}:${activeModal.fileName}</h3>
+                                <h3 class="font-bold text-slate-800 text-sm">${strings.compareTitle}: ${activeModal.fileName}</h3>
                                 <button onclick="closePreview()" class="text-slate-400 hover:text-slate-600 p-1">
                                     <i data-lucide="x" class="w-5 h-5"></i>
                                 </button>
@@ -327,6 +328,46 @@
         function removeFile(index) { filesQueue.splice(index, 1); renderApp(); }
         function clearQueue() { filesQueue = []; renderApp(); }
 
+        // Вспомогательная функция сборки единого PDF файла с заданным качеством
+        function createPdfBuffer(pageImages, quality) {
+            const { jsPDF } = window.jspdf;
+            const doc = new jsPDF({
+                orientation: pageImages[0].width > pageImages[0].height ? 'l' : 'p',
+                unit: 'pt',
+                format: [pageImages[0].width, pageImages[0].height]
+            });
+
+            for (let pIdx = 0; pIdx < pageImages.length; pIdx++) {
+                const pi = pageImages[pIdx];
+                if (pIdx > 0) doc.addPage([pi.width, pi.height], pi.width > pi.height ? 'l' : 'p');
+                doc.addImage(pi.canvas.toDataURL('image/jpeg', quality), 'JPEG', 0, 0, pi.width, pi.height);
+            }
+            return doc.output('arraybuffer');
+        }
+
+        // Вспомогательная функция сборки одностраничного PDF с масштабированием
+        function createSinglePagePdfBuffer(pi, quality, scaleFactor = 1.0) {
+            const { jsPDF } = window.jspdf;
+            const singleDoc = new jsPDF({
+                orientation: pi.width > pi.height ? 'l' : 'p',
+                unit: 'pt',
+                format: [pi.width, pi.height]
+            });
+
+            let canvasToUse = pi.canvas;
+            if (scaleFactor < 1.0) {
+                const scaledCanvas = document.createElement('canvas');
+                scaledCanvas.width = Math.max(1, Math.floor(pi.canvas.width * scaleFactor));
+                scaledCanvas.height = Math.max(1, Math.floor(pi.canvas.height * scaleFactor));
+                const sCtx = scaledCanvas.getContext('2d');
+                sCtx.drawImage(pi.canvas, 0, 0, scaledCanvas.width, scaledCanvas.height);
+                canvasToUse = scaledCanvas;
+            }
+
+            singleDoc.addImage(canvasToUse.toDataURL('image/jpeg', quality), 'JPEG', 0, 0, pi.width, pi.height);
+            return singleDoc.output('arraybuffer');
+        }
+
         async function startConversion() {
             isProcessing = true;
             renderApp();
@@ -351,4 +392,161 @@
                     for (let p = 1; p <= pdfDoc.numPages; p++) {
                         const page = await pdfDoc.getPage(p);
                         const viewport = page.getViewport({ scale: scale });
-                        const canvas
+                        const canvas = document.createElement('canvas');
+                        canvas.width = viewport.width;
+                        canvas.height = viewport.height;
+                        const ctx = canvas.getContext('2d');
+                        await page.render({ canvasContext: ctx, viewport: viewport }).promise;
+
+                        if (p === 1) item.originalDataUrl = canvas.toDataURL('image/jpeg', 0.8);
+
+                        const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                        const data = imgData.data;
+                        for (let j = 0; j < data.length; j += 4) {
+                            const gray = data[j] * 0.299 + data[j + 1] * 0.587 + data[j + 2] * 0.114;
+                            data[j] = gray; data[j + 1] = gray; data[j + 2] = gray;
+                        }
+                        ctx.putImageData(imgData, 0, 0);
+
+                        if (p === 1) item.processedDataUrl = canvas.toDataURL('image/jpeg', 0.8);
+
+                        pageImages.push({
+                            width: page.getViewport({ scale: 1.0 }).width,
+                            height: page.getViewport({ scale: 1.0 }).height,
+                            canvas: canvas
+                        });
+                    }
+
+                    let bestPdfBlob = null;
+                    let bestSize = Infinity;
+                    let low = 0.01, high = 0.95;
+
+                    // Двоичный поиск качества для создания целостного файла
+                    for (let iter = 0; iter < 8; iter++) {
+                        let mid = (low + high) / 2;
+                        const pdfOutput = createPdfBuffer(pageImages, mid);
+                        
+                        if (pdfOutput.byteLength <= MAX_BYTES) {
+                            bestPdfBlob = pdfOutput;
+                            bestSize = pdfOutput.byteLength;
+                            low = mid; // Пробуем лучшее качество
+                        } else {
+                            high = mid; // Уменьшаем качество
+                        }
+                    }
+
+                    // Дополнительная строгая проверка Hard Limit на 490KB
+                    if (bestPdfBlob && bestPdfBlob.byteLength > MAX_BYTES) {
+                        bestPdfBlob = null;
+                    }
+
+                    if (!bestPdfBlob) {
+                        // Если в единый файл до 490 КБ вписать невозможно - делим на части
+                        item.isSplit = true;
+                        let heavyDetected = false;
+                        const zip = new JSZip();
+                        let totalSizeSum = 0;
+
+                        for (let pIdx = 0; pIdx < pageImages.length; pIdx++) {
+                            const pi = pageImages[pIdx];
+                            let pageBytes = null;
+                            let pLow = 0.01, pHigh = 0.90;
+
+                            // Двоичный поиск качества для отдельной страницы
+                            for (let pIter = 0; pIter < 6; pIter++) {
+                                let pMid = (pLow + pHigh) / 2;
+                                const out = createSinglePagePdfBuffer(pi, pMid);
+                                if (out.byteLength <= MAX_BYTES) {
+                                    pageBytes = out;
+                                    pLow = pMid;
+                                } else {
+                                    pHigh = pMid;
+                                }
+                            }
+
+                            // Если даже при качестве 0.01 файл не помещается в 490 КБ - снижаем масштаб рендеринга
+                            if (!pageBytes || pageBytes.byteLength > MAX_BYTES) {
+                                heavyDetected = true;
+                                let resizeScale = 0.8;
+                                while (resizeScale >= 0.2) {
+                                    const out = createSinglePagePdfBuffer(pi, 0.05, resizeScale);
+                                    if (out.byteLength <= MAX_BYTES) {
+                                        pageBytes = out;
+                                        break;
+                                    }
+                                    resizeScale -= 0.15;
+                                }
+                                if (!pageBytes) {
+                                    pageBytes = createSinglePagePdfBuffer(pi, 0.02, 0.15);
+                                }
+                            }
+
+                            zip.file(`Page_${pIdx + 1}_${item.file.name}`, pageBytes);
+                            totalSizeSum += pageBytes.byteLength;
+                        }
+
+                        item.hasHeavyPages = heavyDetected;
+                        const zipBlob = await zip.generateAsync({ type: 'arraybuffer' });
+                        item.processedPdfBytes = zipBlob;
+                        item.processedSize = totalSizeSum / pageImages.length;
+                        item.status = 'success';
+                        item.statusText = strings.successPass;
+                    } else {
+                        item.isSplit = false;
+                        item.hasHeavyPages = false;
+                        item.processedPdfBytes = bestPdfBlob;
+                        item.processedSize = bestSize;
+                        item.status = 'success';
+                        item.statusText = strings.successPass;
+                    }
+                } catch (err) {
+                    item.status = 'error';
+                    item.statusText = strings.errorCorrupt;
+                }
+                renderApp();
+            }
+            isProcessing = false;
+            renderApp();
+        }
+
+        function downloadFile(index) {
+            const item = filesQueue[index];
+            if (!item || !item.processedPdfBytes) return;
+            const ext = item.isSplit ? 'zip' : 'pdf';
+            const mime = item.isSplit ? 'application/zip' : 'application/pdf';
+            const blob = new Blob([item.processedPdfBytes], { type: mime });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url; a.download = `Converted_${item.isSplit ? 'Split_Parts' : 'Under490KB'}_${item.file.name}.${ext}`;
+            document.body.appendChild(a); a.click(); document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+
+        async function downloadAllZip() {
+            const zip = new JSZip();
+            for (const item of filesQueue) {
+                if (item.processedPdfBytes) {
+                    const ext = item.isSplit ? 'zip' : 'pdf';
+                    zip.file(`Processed_${item.file.name}.${ext}`, item.processedPdfBytes);
+                }
+            }
+            const content = await zip.generateAsync({ type: 'blob' });
+            const url = URL.createObjectURL(content);
+            const a = document.createElement('a');
+            a.href = url; a.download = `BankPDF_Batch_Export.zip`;
+            document.body.appendChild(a); a.click(); document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+
+        openPreview = function(index) {
+            const item = filesQueue[index];
+            if (!item) return;
+            activeModal = { fileName: item.file.name, originalDataUrl: item.originalDataUrl, processedDataUrl: item.processedDataUrl };
+            renderApp();
+        }
+        function closePreview() { activeModal = null; renderApp(); }
+
+        renderApp();
+    </script>
+</body>
+</html>

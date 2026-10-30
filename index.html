@@ -116,7 +116,7 @@
         let isProcessing = false;
         let activeModal = null;
         
-        // Строгий лимит 490 KB (490 * 1024 байт)
+        // Жесткий лимит 490 KB (490 * 1024 байт)
         const MAX_BYTES = 490 * 1024;
 
         function renderApp() {
@@ -328,7 +328,7 @@
         function removeFile(index) { filesQueue.splice(index, 1); renderApp(); }
         function clearQueue() { filesQueue = []; renderApp(); }
 
-        // Вспомогательная функция сборки единого PDF файла с заданным качеством
+        // Генерация полноценного PDF из всех страниц
         function createPdfBuffer(pageImages, quality) {
             const { jsPDF } = window.jspdf;
             const doc = new jsPDF({
@@ -345,15 +345,11 @@
             return doc.output('arraybuffer');
         }
 
-        // Вспомогательная функция сборки одностраничного PDF с масштабированием
-        function createSinglePagePdfBuffer(pi, quality, scaleFactor = 1.0) {
+        // Генерация одной страницы с жестким контролем размера под 490 КБ
+        function createStrictSinglePagePdf(pi, initialQuality, scaleFactor) {
             const { jsPDF } = window.jspdf;
-            const singleDoc = new jsPDF({
-                orientation: pi.width > pi.height ? 'l' : 'p',
-                unit: 'pt',
-                format: [pi.width, pi.height]
-            });
-
+            
+            // Масштабируем холст если передан коэффициент меньше 1.0
             let canvasToUse = pi.canvas;
             if (scaleFactor < 1.0) {
                 const scaledCanvas = document.createElement('canvas');
@@ -364,8 +360,40 @@
                 canvasToUse = scaledCanvas;
             }
 
-            singleDoc.addImage(canvasToUse.toDataURL('image/jpeg', quality), 'JPEG', 0, 0, pi.width, pi.height);
-            return singleDoc.output('arraybuffer');
+            let bestOut = null;
+            let low = 0.01, high = initialQuality;
+
+            // Бинарный поиск качественного сжатия для одной страницы
+            for (let iter = 0; iter < 5; iter++) {
+                let mid = (low + high) / 2;
+                const singleDoc = new jsPDF({
+                    orientation: pi.width > pi.height ? 'l' : 'p',
+                    unit: 'pt',
+                    format: [pi.width, pi.height]
+                });
+                singleDoc.addImage(canvasToUse.toDataURL('image/jpeg', mid), 'JPEG', 0, 0, pi.width, pi.height);
+                const out = singleDoc.output('arraybuffer');
+
+                if (out.byteLength <= MAX_BYTES) {
+                    bestOut = out;
+                    low = mid;
+                } else {
+                    high = mid;
+                }
+            }
+
+            // Если даже на минимуме не влезло — возвращаем последнее сгенерированное или форсируем ультра-низкое качество
+            if (!bestOut) {
+                const singleDoc = new jsPDF({
+                    orientation: pi.width > pi.height ? 'l' : 'p',
+                    unit: 'pt',
+                    format: [pi.width, pi.height]
+                });
+                singleDoc.addImage(canvasToUse.toDataURL('image/jpeg', 0.01), 'JPEG', 0, 0, pi.width, pi.height);
+                bestOut = singleDoc.output('arraybuffer');
+            }
+
+            return bestOut;
         }
 
         async function startConversion() {
@@ -419,29 +447,28 @@
 
                     let bestPdfBlob = null;
                     let bestSize = Infinity;
-                    let low = 0.01, high = 0.95;
+                    let low = 0.01, high = 0.9;
 
-                    // Двоичный поиск качества для создания целостного файла
-                    for (let iter = 0; iter < 8; iter++) {
+                    // Попытка сжать весь документ в единый файл до 490 КБ
+                    for (let iter = 0; iter < 7; iter++) {
                         let mid = (low + high) / 2;
                         const pdfOutput = createPdfBuffer(pageImages, mid);
                         
                         if (pdfOutput.byteLength <= MAX_BYTES) {
                             bestPdfBlob = pdfOutput;
                             bestSize = pdfOutput.byteLength;
-                            low = mid; // Пробуем лучшее качество
+                            low = mid;
                         } else {
-                            high = mid; // Уменьшаем качество
+                            high = mid;
                         }
                     }
 
-                    // Дополнительная строгая проверка Hard Limit на 490KB
                     if (bestPdfBlob && bestPdfBlob.byteLength > MAX_BYTES) {
                         bestPdfBlob = null;
                     }
 
                     if (!bestPdfBlob) {
-                        // Если в единый файл до 490 КБ вписать невозможно - делим на части
+                        // Если единый файл превышает 490 КБ, разделяем страницы и сжимаем каждую строго под лимит
                         item.isSplit = true;
                         let heavyDetected = false;
                         const zip = new JSZip();
@@ -449,36 +476,19 @@
 
                         for (let pIdx = 0; pIdx < pageImages.length; pIdx++) {
                             const pi = pageImages[pIdx];
-                            let pageBytes = null;
-                            let pLow = 0.01, pHigh = 0.90;
+                            let pageBytes = createStrictSinglePagePdf(pi, 0.8, 1.0);
 
-                            // Двоичный поиск качества для отдельной страницы
-                            for (let pIter = 0; pIter < 6; pIter++) {
-                                let pMid = (pLow + pHigh) / 2;
-                                const out = createSinglePagePdfBuffer(pi, pMid);
-                                if (out.byteLength <= MAX_BYTES) {
-                                    pageBytes = out;
-                                    pLow = pMid;
-                                } else {
-                                    pHigh = pMid;
-                                }
+                            // Многоуровневая проверка: если страница всё еще больше 490 КБ, уменьшаем масштаб
+                            let currentScale = 0.9;
+                            while (pageBytes.byteLength > MAX_BYTES && currentScale >= 0.2) {
+                                heavyDetected = true;
+                                pageBytes = createStrictSinglePagePdf(pi, 0.4, currentScale);
+                                currentScale -= 0.2;
                             }
 
-                            // Если даже при качестве 0.01 файл не помещается в 490 КБ - снижаем масштаб рендеринга
-                            if (!pageBytes || pageBytes.byteLength > MAX_BYTES) {
-                                heavyDetected = true;
-                                let resizeScale = 0.8;
-                                while (resizeScale >= 0.2) {
-                                    const out = createSinglePagePdfBuffer(pi, 0.05, resizeScale);
-                                    if (out.byteLength <= MAX_BYTES) {
-                                        pageBytes = out;
-                                        break;
-                                    }
-                                    resizeScale -= 0.15;
-                                }
-                                if (!pageBytes) {
-                                    pageBytes = createSinglePagePdfBuffer(pi, 0.02, 0.15);
-                                }
+                            // Последняя страховка: если всё еще не влезло, жестко давим качество до минимума
+                            if (pageBytes.byteLength > MAX_BYTES) {
+                                pageBytes = createStrictSinglePagePdf(pi, 0.05, 0.15);
                             }
 
                             zip.file(`Page_${pIdx + 1}_${item.file.name}`, pageBytes);

@@ -1,8 +1,8 @@
-# BankPDF Converter 🇺🇦
+# BudPDF Converter 🇺🇦
 
 Професійне клієнтське веб-решення для підготовки, оптимізації та стиснення PDF-документів під суворі вимоги банків України (жорсткий ліміт розміру **< 490 КБ**).
 
-🌐 **Live Demo:** [https://budpostach.github.io/BankPDF/](https://budpostach.github.io/BankPDF/)
+🌐 **Live Demo:** [https://budpostach.github.io/BudPDF/](https://budpostach.github.io/BudPDF/)
  
 ---
 
